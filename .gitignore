@@ -4,6 +4,7 @@ canvas.private.yaml
 # Environment and secrets
 .env
 .env.*
+!.env.example
 secrets.yaml
 *.pem
 *.key

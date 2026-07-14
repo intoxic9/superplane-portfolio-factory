@@ -320,10 +320,10 @@ Exact menu labels may vary by SuperPlane UI version; the imported graph already 
 ## How to run
 
 1. Enable the canvas in SuperPlane.
-2. In the configured Slack channel, mention the bot with a brief. Example:
+2. Start a request in **any Slack channel** where the SuperPlane bot has been added. Every initial request must explicitly mention `@SuperPlane`. Example:
 
    ```text
-   @PortfolioFactory Build a software engineer portfolio for Jordan Lee…
+   @SuperPlane Build a software engineer portfolio for Jordan Lee using the resume below.
    ```
 
    Full sample: [examples/sample-slack-prompt.md](./examples/sample-slack-prompt.md).
@@ -331,7 +331,13 @@ Exact menu labels may vary by SuperPlane UI version; the imported graph already 
 3. Wait for the ack, then the approval message with a preview link.
 4. Open the preview → click **Approve & Deploy** or **Reject**.
 5. On approve, wait for the success message with the live Render URL.
-6. To iterate, reply **in the same thread** (e.g. `@bot use a darker palette`). Memory keeps prior context.
+6. To iterate, post the follow-up **inside the same Slack thread** and mention `@SuperPlane` again—or the request will not trigger. Example:
+
+   ```text
+   @SuperPlane Use a darker palette and add a Projects section.
+   ```
+
+   Memory keeps prior thread context.
 
 ---
 
@@ -339,7 +345,7 @@ Exact menu labels may vary by SuperPlane UI version; the imported graph already 
 
 | Symptom | Likely cause | What to check |
 |---|---|---|
-| Canvas never starts | Trigger not bound / bot not in channel | On Mention subscription + integration IDs; invite bot; ensure you `@mention` the app |
+| Canvas never starts | Trigger not bound; bot not added to the channel; missing `@SuperPlane` mention | Confirm On Mention subscription + integration IDs; invite the bot; include `@SuperPlane` in every initial request and follow-up |
 | No ack in Slack | `SLACK_BOT_TOKEN` missing or invalid | Secret name exact match; bot scopes for `chat:write` |
 | Generation fails | OpenRouter key / model | `OPENROUTER_API_KEY`; model string `openai/gpt-5`; OpenRouter dashboard usage |
 | `NEED_MORE_INFO` reply | Brief too vague | Include at least a name + role/vibe; see sample prompt |
@@ -350,7 +356,7 @@ Exact menu labels may vary by SuperPlane UI version; the imported graph already 
 | Render poll never goes live | Repo not connected or service ID wrong | Render auto-deploy from `main`; `YOUR_RENDER_SERVICE_ID`; `RENDER_API_KEY` |
 | Deploy error status | Build failed on Render | Render dashboard logs; valid `index.html` on production branch |
 | Verify Live fails | DNS / CDN lag or wrong URL | Wait and open URL manually; check Get URL `serviceDetails.url` |
-| Refinements ignore prior context | New thread / wrong anchor | Reply in the **same** Slack thread so `thread_anchor` matches |
+| Refinements ignore prior context | New channel message or missing mention | Reply inside the **same** Slack thread; mention `@SuperPlane` again; avoid starting a new channel message for refinements |
 
 Use SuperPlane’s run inspector (Console / canvas run details) for node-level outputs. Notification nodes post the failure stage and message when GitHub/Render return structured errors.
 
