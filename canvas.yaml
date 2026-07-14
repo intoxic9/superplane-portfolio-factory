@@ -1,0 +1,1036 @@
+apiVersion: v1
+kind: Canvas
+metadata:
+  id: YOUR_CANVAS_ID
+  name: Portfolio Factory
+  description: AI portfolio factory v4 — Slack-thread conversational memory. Every mention is added to a per-thread history; gpt-5 sees the full conversation each time, so refinements like "make it darker" naturally combine with prior context. Two memory namespaces — thread_messages for context, portfolios for final deploys.
+spec:
+  nodes:
+    - id: runnerbash-generate-site-4882ea
+      name: Generate Site
+      type: TYPE_ACTION
+      component: runnerBash
+      configuration:
+        environment:
+          - name: OPENROUTER_API_KEY
+            secret:
+              key: OPENROUTER_API_KEY
+              secret: OPENROUTER_API_KEY
+            valueSource: secret
+          - name: MODEL
+            value: openai/gpt-5
+            valueSource: literal
+          - name: DESCRIPTION
+            value: '{{ $[''Build Prompt''].data.result.prompt }}'
+            valueSource: literal
+        execution_mode: host
+        execution_timeout_seconds: 300
+        machine_type: e1-tiny-amd64
+        script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ -z "${DESCRIPTION// /}" ]]; then
+            jq -n '{text: "NEED_MORE_INFO: Please describe the portfolio you want — at minimum the person'\''s name and what they do."}' > "$SUPERPLANE_RESULT_FILE"
+            exit 0
+          fi
+          PROMPT=$(cat <<EOF
+          You are a senior front-end designer building a personal portfolio website. The user's brief is below — it may be a single message or a multi-message Slack thread including refinements.
+
+          BRIEF:
+          ${DESCRIPTION}
+
+          DECISION RULES:
+          1. If the brief is too vague to build anything meaningful (no name, no idea what the portfolio is about), output ONLY:
+          NEED_MORE_INFO: <specific question naming what's missing>
+
+          2. Otherwise output a complete, self-contained index.html and NOTHING else.
+
+          HTML REQUIREMENTS:
+          - All CSS in <style>, all JS in <script>, single file
+          - No external files, no frameworks, no build step
+          - Use the name, role, projects, contact, design vibe from the brief; sensible defaults for missing pieces
+          - When the brief is a multi-turn conversation, the LATER messages override earlier ones when they conflict
+          - Fully responsive (mobile single-column, desktop multi-column via grid/flex)
+          - Semantic HTML5, accessible contrast, subtle hover transitions, coherent palette, placeholder SVG/emoji
+          - Output ONLY the raw HTML starting with <!DOCTYPE html> or <html
+          EOF
+          )
+          PAYLOAD=$(jq -n --arg model "$MODEL" --arg content "$PROMPT" '{model:$model,messages:[{role:"user",content:$content}]}')
+          RESPONSE=$(curl -sS --max-time 240 \
+            -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -H "HTTP-Referer: https://superplane.com" \
+            -H "X-Title: Portfolio Factory" \
+            -d "$PAYLOAD" \
+            https://openrouter.ai/api/v1/chat/completions)
+          TEXT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+          if [[ -z "$TEXT" ]]; then
+            echo "OpenRouter returned no content: $RESPONSE" >&2
+            exit 1
+          fi
+          jq -n --arg text "$TEXT" '{text: $text}' > "$SUPERPLANE_RESULT_FILE"
+      position:
+        x: 3840
+        'y': 720
+      isCollapsed: false
+    - id: http-notify-rejected-3d94dc
+      name: Notify Rejected
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ $[''Clean Prompt''].data.result.channel }}'
+          text: |-
+            :pencil2: Got it, discarded. Reply *in this thread* with refinements and I'll generate a new version. I remember everything we've discussed — for example:
+
+            > `@bot use a dark monochrome palette, drop the blog section, add a 'Speaking' section with three placeholder talks`
+
+            Or describe a completely different design vibe and I'll start fresh.
+          thread_ts: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 8960
+        'y': 900
+      isCollapsed: false
+    - id: runnerbash-push-to-github-9780ad
+      name: Push to GitHub
+      type: TYPE_ACTION
+      component: runnerBash
+      configuration:
+        environment:
+          - name: HTML
+            value: '{{ $[''Generate Site''].data.result.text }}'
+            valueSource: literal
+          - name: REPO_OVERRIDE
+            value: '{{ $[''Clean Prompt''].data.result.repo_override }}'
+            valueSource: literal
+          - name: DEFAULT_REPO
+            value: YOUR_GITHUB_USERNAME/YOUR_REPOSITORY
+            valueSource: literal
+          - name: GH_TOKEN
+            secret:
+              key: GH_TOKEN
+              secret: GH_TOKEN
+            valueSource: secret
+        execution_mode: host
+        execution_timeout_seconds: 300
+        machine_type: e1-tiny-amd64
+        script: |
+          #!/usr/bin/env bash
+          set -uo pipefail
+          REPO_URL=""
+          fail() {
+            local stage="$1"; shift
+            local msg="$*"
+            local scrubbed
+            scrubbed="$(printf '%s' "$msg" | sed -E 's#x-access-token:[^@]+@#x-access-token:***@#g')"
+            jq -n --arg stage "$stage" --arg error "$scrubbed" --arg repo "${REPO_URL:-unknown}" \
+              '{error:$error,stage:$stage,repo:$repo}' > "$SUPERPLANE_RESULT_FILE" 2>/dev/null || \
+              printf '{"error":"%s","stage":"%s"}' "$scrubbed" "$stage" > "$SUPERPLANE_RESULT_FILE"
+            exit 1
+          }
+          if [[ -n "${REPO_OVERRIDE// /}" ]]; then REPO_INPUT="$REPO_OVERRIDE"; else REPO_INPUT="$DEFAULT_REPO"; fi
+          REPO_URL="${REPO_INPUT%.git}"; REPO_URL="${REPO_URL%/}"
+          if [[ "$REPO_URL" != https://* ]]; then REPO_URL="https://github.com/${REPO_URL}"; fi
+          REPO_PATH="${REPO_URL#https://github.com/}"
+          CLONE_ERR=$(mktemp)
+          if ! git clone --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${REPO_PATH}.git" repo 2>"$CLONE_ERR"; then
+            fail "git-clone" "$(cat "$CLONE_ERR")"
+          fi
+          cd repo
+          printf '%s' "$HTML" > index.html
+          git config user.email "factory@superplane.local"
+          git config user.name "Portfolio Factory"
+          git add index.html
+          if git diff --cached --quiet; then
+            git commit --allow-empty -m "Portfolio Factory: approved redeploy"
+          else
+            git commit -m "Portfolio Factory: approved, deploying to production"
+          fi
+          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          PUSH_ERR=$(mktemp)
+          if ! git push origin "$BRANCH" 2>"$PUSH_ERR"; then
+            fail "git-push" "$(cat "$PUSH_ERR")"
+          fi
+          jq -n --arg repo "$REPO_URL" --arg branch "$BRANCH" '{repo:$repo,branch:$branch}' > "$SUPERPLANE_RESULT_FILE"
+      position:
+        x: 7680
+        'y': 990
+      isCollapsed: false
+    - id: noop-on-error-57258b
+      name: On Error
+      type: TYPE_ACTION
+      component: noop
+      configuration: {}
+      position:
+        x: 12800
+        'y': 900
+      isCollapsed: false
+    - id: http-ask-more-info-062e17
+      name: Ask More Info
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ $[''Clean Prompt''].data.result.channel }}'
+          text: ':thinking_face: I need a bit more to work with — {{ $[''Generate Site''].data.result.text }}'
+          thread_ts: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 8960
+        'y': 0
+      isCollapsed: false
+    - id: http-notify-render-error-e6c307
+      name: Notify Render Error
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ $[''Clean Prompt''].data.result.channel }}'
+          text: ':x: Couldn''t reach Render API. The deploy may still have succeeded: https://dashboard.render.com/static/YOUR_RENDER_SERVICE_ID'
+          thread_ts: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 10880
+        'y': 1620
+      isCollapsed: false
+    - id: runnerbash-push-preview-5f50cd
+      name: Push Preview
+      type: TYPE_ACTION
+      component: runnerBash
+      configuration:
+        environment:
+          - name: HTML
+            value: '{{ $[''Generate Site''].data.result.text }}'
+            valueSource: literal
+          - name: REPO_OVERRIDE
+            value: '{{ $[''Clean Prompt''].data.result.repo_override }}'
+            valueSource: literal
+          - name: DEFAULT_REPO
+            value: YOUR_GITHUB_USERNAME/YOUR_REPOSITORY
+            valueSource: literal
+          - name: USER_ID
+            value: '{{ $[''Clean Prompt''].data.result.user_id }}'
+            valueSource: literal
+          - name: GH_TOKEN
+            secret:
+              key: GH_TOKEN
+              secret: GH_TOKEN
+            valueSource: secret
+        execution_mode: host
+        execution_timeout_seconds: 300
+        machine_type: e1-tiny-amd64
+        script: |
+          #!/usr/bin/env bash
+          set -uo pipefail
+          REPO_URL=""
+          fail() {
+            local stage="$1"; shift
+            local msg="$*"
+            local scrubbed
+            scrubbed="$(printf '%s' "$msg" | sed -E 's#x-access-token:[^@]+@#x-access-token:***@#g')"
+            jq -n --arg stage "$stage" --arg error "$scrubbed" --arg repo "${REPO_URL:-unknown}" \
+              '{error:$error,stage:$stage,repo:$repo}' > "$SUPERPLANE_RESULT_FILE" 2>/dev/null || \
+              printf '{"error":"%s","stage":"%s"}' "$scrubbed" "$stage" > "$SUPERPLANE_RESULT_FILE"
+            exit 1
+          }
+          if [[ -n "${REPO_OVERRIDE// /}" ]]; then REPO_INPUT="$REPO_OVERRIDE"; else REPO_INPUT="$DEFAULT_REPO"; fi
+          REPO_URL="${REPO_INPUT%.git}"; REPO_URL="${REPO_URL%/}"
+          if [[ "$REPO_URL" != https://* ]]; then REPO_URL="https://github.com/${REPO_URL}"; fi
+          REPO_PATH="${REPO_URL#https://github.com/}"
+          OWNER_REPO="$REPO_PATH"
+          PREVIEW_BRANCH="preview/${USER_ID:-default}"
+          CLONE_ERR=$(mktemp)
+          if ! git clone --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${REPO_PATH}.git" repo 2>"$CLONE_ERR"; then
+            fail "git-clone" "$(cat "$CLONE_ERR")"
+          fi
+          cd repo
+          git checkout -B "$PREVIEW_BRANCH" >/dev/null 2>&1 || true
+          printf '%s' "$HTML" > index.html
+          git config user.email "factory@superplane.local"
+          git config user.name "Portfolio Factory"
+          git add index.html
+          git commit -m "Portfolio Factory: preview for ${USER_ID}" --allow-empty >/dev/null
+          PUSH_ERR=$(mktemp)
+          if ! git push origin "$PREVIEW_BRANCH" --force 2>"$PUSH_ERR"; then
+            fail "git-push-preview" "$(cat "$PUSH_ERR")"
+          fi
+          PREVIEW_URL="https://htmlpreview.github.io/?https://github.com/${OWNER_REPO}/blob/${PREVIEW_BRANCH}/index.html"
+          jq -n --arg repo "$REPO_URL" --arg branch "$PREVIEW_BRANCH" --arg preview_url "$PREVIEW_URL" \
+            '{repo:$repo,branch:$branch,preview_url:$preview_url}' > "$SUPERPLANE_RESULT_FILE"
+      position:
+        x: 5760
+        'y': 990
+      isCollapsed: false
+    - id: http-notify-error-1afeef
+      name: Notify Error
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ $[''Clean Prompt''].data.result.channel }}'
+          text: ':x: Something went wrong in the pipeline. Check the SuperPlane canvas run details.'
+          thread_ts: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 4480
+        'y': 1080
+      isCollapsed: false
+    - id: http-notify-verify-error-4b0427
+      name: Notify Verify Error
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ $[''Clean Prompt''].data.result.channel }}'
+          text: ':warning: Deployed, but the live site isn''t responding 200 yet. Try opening it in a minute: {{ $[''Get URL''].data.body.serviceDetails.url }}'
+          thread_ts: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 11520
+        'y': 1170
+      isCollapsed: false
+    - id: load-thread-context
+      name: Load Thread Context
+      type: TYPE_ACTION
+      component: readMemory
+      configuration:
+        emitMode: allAtOnce
+        matchList:
+          - name: thread_anchor
+            value: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        namespace: thread_messages
+        resultMode: all
+      position:
+        x: 2560
+        'y': 810
+      isCollapsed: false
+    - id: upsertmemory-save-portfolio-c9ec7a
+      name: Save Portfolio
+      type: TYPE_ACTION
+      component: upsertMemory
+      configuration:
+        matchList:
+          - name: user_id
+            value: '{{ $[''Clean Prompt''].data.result.user_id }}'
+        namespace: portfolios
+        valueList:
+          - name: user_id
+            value: '{{ $[''Clean Prompt''].data.result.user_id }}'
+          - name: thread_anchor
+            value: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+          - name: prompt
+            value: '{{ $[''Clean Prompt''].data.result.clean_text }}'
+          - name: repo
+            value: '{{ $[''Push to GitHub''].data.result.repo }}'
+          - name: url
+            value: '{{ $[''Get URL''].data.body.serviceDetails.url }}'
+          - name: channel
+            value: '{{ $[''Clean Prompt''].data.result.channel }}'
+          - name: updated_at
+            value: '{{ now() }}'
+      position:
+        x: 11520
+        'y': 1530
+      isCollapsed: false
+    - id: if-check-need-info-2ad4f6
+      name: Check Need Info
+      type: TYPE_ACTION
+      component: if
+      configuration:
+        expression: hasPrefix($['Generate Site'].data.result.text, "NEED_MORE_INFO")
+      position:
+        x: 4480
+        'y': 720
+      isCollapsed: false
+    - id: http-notify-preview-error-e11045
+      name: Notify Preview Error
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ $[''Clean Prompt''].data.result.channel }}'
+          text: ':x: Couldn''t build the preview: `{{ $[''Push Preview''].data.result.stage }}` — {{ $[''Push Preview''].data.result.error }}'
+          thread_ts: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 12160
+        'y': 270
+      isCollapsed: false
+    - id: if-check-approval-efb865
+      name: Check Approval
+      type: TYPE_ACTION
+      component: if
+      configuration:
+        expression: $['Approval Gate'].data.value == "approve"
+      position:
+        x: 7040
+        'y': 990
+      isCollapsed: false
+    - id: http-get-url-b2000c
+      name: Get URL
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: RENDER_API_KEY
+            secret: RENDER_API_KEY
+          type: bearer
+        method: GET
+        timeoutSeconds: 30
+        url: https://api.render.com/v1/services/YOUR_RENDER_SERVICE_ID
+      position:
+        x: 10240
+        'y': 1350
+      isCollapsed: false
+    - id: http-poll-deploy-a43759
+      name: Poll Deploy
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: RENDER_API_KEY
+            secret: RENDER_API_KEY
+          type: bearer
+        method: GET
+        timeoutSeconds: 30
+        url: https://api.render.com/v1/services/YOUR_RENDER_SERVICE_ID/deploys?limit=1
+      position:
+        x: 7680
+        'y': 1530
+      isCollapsed: false
+    - id: http-notify-validate-error-821f9d
+      name: Notify Validate Error
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ $[''Clean Prompt''].data.result.channel }}'
+          text: ':warning: gpt-5 returned something that didn''t look like valid HTML. Reply in this thread with more details and try again.'
+          thread_ts: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 9600
+        'y': 90
+      isCollapsed: false
+    - id: save-thread-message
+      name: Save Thread Message
+      type: TYPE_ACTION
+      component: upsertMemory
+      configuration:
+        matchList:
+          - name: ts
+            value: '{{ $[''Clean Prompt''].data.result.self_ts }}'
+        namespace: thread_messages
+        valueList:
+          - name: thread_anchor
+            value: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+          - name: ts
+            value: '{{ $[''Clean Prompt''].data.result.self_ts }}'
+          - name: user_id
+            value: '{{ $[''Clean Prompt''].data.result.user_id }}'
+          - name: prompt
+            value: '{{ $[''Clean Prompt''].data.result.clean_text }}'
+      position:
+        x: 1920
+        'y': 810
+      isCollapsed: false
+    - id: http-verify-live-ce616f
+      name: Verify Live
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        method: GET
+        successCodes: '200'
+        timeoutSeconds: 30
+        url: '{{ $[''Get URL''].data.body.serviceDetails.url }}'
+      position:
+        x: 10880
+        'y': 1260
+      isCollapsed: false
+    - id: slack-waitforbuttonclick-approval-gate-29736b
+      name: Approval Gate
+      type: TYPE_ACTION
+      component: slack.waitForButtonClick
+      configuration:
+        buttons:
+          - name: Approve & Deploy
+            value: approve
+          - name: Reject
+            value: reject
+        channel: YOUR_SLACK_CHANNEL_ID
+        message: |-
+          :eyes: *Portfolio ready for review.*
+
+          • Preview (rendered in browser): {{ $['Push Preview'].data.result.preview_url }}
+          • Source branch: `{{ $['Push Preview'].data.result.branch }}` on {{ $['Push Preview'].data.result.repo }}
+
+          *Approve* pushes to `main` and triggers the Render production deploy.
+          *Reject* discards this version — you can then reply *in this thread* with refinements (e.g. `@bot make it darker`). The bot remembers everything said in the thread so far.
+        timeout: 600
+      metadata:
+        channel:
+          id: YOUR_SLACK_CHANNEL_ID
+          name: YOUR_SLACK_CHANNEL_NAME
+      position:
+        x: 6400
+        'y': 1080
+      isCollapsed: false
+      integration:
+        id: YOUR_SUPERPLANE_INTEGRATION_ID
+    - id: runnerbash-clean-prompt-a5ddfd
+      name: Clean Prompt
+      type: TYPE_ACTION
+      component: runnerBash
+      configuration:
+        environment:
+          - name: RAW_TEXT
+            value: '{{ root().data.text }}'
+            valueSource: literal
+          - name: USER_ID
+            value: '{{ root().data.user }}'
+            valueSource: literal
+          - name: CHANNEL
+            value: '{{ root().data.channel }}'
+            valueSource: literal
+          - name: SELF_TS
+            value: '{{ root().data.ts }}'
+            valueSource: literal
+          - name: PARENT_TS
+            value: '{{ root().data.thread_ts ?? root().data.ts }}'
+            valueSource: literal
+        execution_mode: host
+        execution_timeout_seconds: 60
+        machine_type: e1-tiny-amd64
+        script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          CLEAN=$(printf '%s' "$RAW_TEXT" \
+            | sed -E 's/<@[A-Z0-9]+>//g' \
+            | sed -E 's/<(https?:[^|>]+)\|([^>]+)>/\2/g' \
+            | sed -E 's/<(https?:[^>]+)>/\1/g' \
+            | sed -E 's/<mailto:[^|>]+\|([^>]+)>/\1/g' \
+            | sed -E 's/<mailto:([^>]+)>/\1/g' \
+            | tr -s '[:space:]' ' ' \
+            | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+          REPO_OVERRIDE=$(printf '%s' "$CLEAN" \
+            | grep -oE 'repo:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' \
+            | head -1 | sed 's/^repo://' || true)
+          if [[ -n "$REPO_OVERRIDE" ]]; then
+            CLEAN=$(printf '%s' "$CLEAN" \
+              | sed -E 's|repo:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+||g' \
+              | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+          fi
+          # thread_anchor: the conversation key. Use Slack's thread_ts if mention is in a thread, else this message's own ts.
+          THREAD_ANCHOR="${PARENT_TS:-$SELF_TS}"
+          jq -n \
+            --arg clean_text "$CLEAN" \
+            --arg user_id "$USER_ID" \
+            --arg channel "$CHANNEL" \
+            --arg self_ts "$SELF_TS" \
+            --arg thread_anchor "$THREAD_ANCHOR" \
+            --arg repo_override "${REPO_OVERRIDE:-}" \
+            '{clean_text:$clean_text,user_id:$user_id,channel:$channel,self_ts:$self_ts,thread_anchor:$thread_anchor,repo_override:$repo_override}' \
+            > "$SUPERPLANE_RESULT_FILE"
+      position:
+        x: 1280
+        'y': 900
+      isCollapsed: false
+    - id: http-notify-deploy-error-d74d66
+      name: Notify Deploy Error
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ $[''Clean Prompt''].data.result.channel }}'
+          text: ':x: Render deploy ended in status `{{ $[''Refresh Deploy''].data.body[0].deploy.status }}`. Check the dashboard: https://dashboard.render.com/static/YOUR_RENDER_SERVICE_ID'
+          thread_ts: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 10240
+        'y': 990
+      isCollapsed: false
+    - id: wait-poll-wait-5349bd
+      name: Poll Wait
+      type: TYPE_ACTION
+      component: wait
+      configuration:
+        mode: interval
+        unit: seconds
+        waitFor: '15'
+      position:
+        x: 7040
+        'y': 1350
+      isCollapsed: false
+    - id: http-refresh-deploy-b3396e
+      name: Refresh Deploy
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: RENDER_API_KEY
+            secret: RENDER_API_KEY
+          type: bearer
+        method: GET
+        timeoutSeconds: 30
+        url: https://api.render.com/v1/services/YOUR_RENDER_SERVICE_ID/deploys?limit=1
+      position:
+        x: 8960
+        'y': 1440
+      isCollapsed: false
+    - id: http-notify-success-168418
+      name: Notify Success
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ $[''Clean Prompt''].data.result.channel }}'
+          text: |-
+            :tada: Live in production: {{ $['Get URL'].data.body.serviceDetails.url }}
+            Repo: {{ $['Push to GitHub'].data.result.repo }} (main branch)
+
+            Want to tweak something? Just reply in this thread — I remember everything we discussed.
+          thread_ts: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 12160
+        'y': 1530
+      isCollapsed: false
+    - id: slack-onappmention-on-mention-0adf8d
+      name: On Mention
+      type: TYPE_TRIGGER
+      component: slack.onAppMention
+      configuration: {}
+      metadata:
+        appSubscriptionID: YOUR_APP_SUBSCRIPTION_ID
+      position:
+        x: 0
+        'y': 900
+      isCollapsed: false
+      integration:
+        id: YOUR_SUPERPLANE_INTEGRATION_ID
+    - id: if-validate-html-f42f6c
+      name: Validate HTML
+      type: TYPE_ACTION
+      component: if
+      configuration:
+        expression: hasPrefix($['Generate Site'].data.result.text, "<") && len($['Generate Site'].data.result.text) > 200
+      position:
+        x: 5120
+        'y': 900
+      isCollapsed: false
+    - id: http-ack-start-709f86
+      name: Ack Start
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ root().data.channel }}'
+          text: ':hammer_and_wrench: Got it — generating your portfolio with gpt-5. I''ll reply in this thread when ready (1-3 min).'
+          thread_ts: '{{ root().data.thread_ts ?? root().data.ts }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 640
+        'y': 900
+      isCollapsed: false
+    - id: http-notify-approval-timeout-f4cbca
+      name: Notify Approval Timeout
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ $[''Clean Prompt''].data.result.channel }}'
+          text: ':alarm_clock: Approval timed out after 10 minutes. The preview is still here if you want it: {{ $[''Push Preview''].data.result.preview_url }} — reply with a fresh `@bot ...` in this thread to try again.'
+          thread_ts: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 8320
+        'y': 630
+      isCollapsed: false
+    - id: build-prompt
+      name: Build Prompt
+      type: TYPE_ACTION
+      component: runnerBash
+      configuration:
+        environment:
+          - name: CONTEXT_JSON
+            value: '{{ $[''Load Thread Context''].data.values }}'
+            valueSource: literal
+          - name: CURRENT_TEXT
+            value: '{{ $[''Clean Prompt''].data.result.clean_text }}'
+            valueSource: literal
+        execution_mode: host
+        execution_timeout_seconds: 60
+        machine_type: e1-tiny-amd64
+        script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          # CONTEXT_JSON may be a JSON-stringified array of prior messages, or empty.
+          # Each item: {thread_anchor, ts, user_id, prompt}
+          # Sort by ts ascending and format as conversation history.
+          # The current message is already saved → will appear in CONTEXT_JSON,
+          # but we still inject CURRENT_TEXT separately for emphasis.
+
+          HISTORY=""
+          if [[ -n "${CONTEXT_JSON// /}" && "$CONTEXT_JSON" != "null" && "$CONTEXT_JSON" != "[]" ]]; then
+            HISTORY=$(printf '%s' "$CONTEXT_JSON" | jq -r '
+              if type == "array" then
+                sort_by(.ts // "")
+                | .[]
+                | select(.prompt != null and .prompt != "")
+                | "- " + .prompt
+              else
+                empty
+              end
+            ' 2>/dev/null || true)
+          fi
+
+          if [[ -n "$HISTORY" && $(printf '%s\n' "$HISTORY" | wc -l) -gt 1 ]]; then
+            PROMPT=$(cat <<EOF
+          Slack thread conversation so far (oldest first):
+          ${HISTORY}
+
+          The most recent message is:
+          ${CURRENT_TEXT}
+
+          Treat the entire conversation above as your brief. If the most recent message is a refinement (e.g. "make it darker", "add a blog section", "use a different name"), apply it on top of the design you would build from the earlier messages. If it stands alone, build accordingly.
+          EOF
+          )
+          else
+            PROMPT="$CURRENT_TEXT"
+          fi
+
+          jq -n --arg prompt "$PROMPT" '{prompt:$prompt}' > "$SUPERPLANE_RESULT_FILE"
+      position:
+        x: 3200
+        'y': 810
+      isCollapsed: false
+    - id: http-notify-push-error-c11d71
+      name: Notify Push Error
+      type: TYPE_ACTION
+      component: http
+      configuration:
+        authorization:
+          credential:
+            key: SLACK_BOT_TOKEN
+            secret: SLACK_BOT_TOKEN
+          type: bearer
+        contentType: application/json
+        json:
+          channel: '{{ $[''Clean Prompt''].data.result.channel }}'
+          text: ':x: Production push failed: `{{ $[''Push to GitHub''].data.result.stage }}` — {{ $[''Push to GitHub''].data.result.error }}'
+          thread_ts: '{{ $[''Clean Prompt''].data.result.thread_anchor }}'
+        method: POST
+        successCodes: '200'
+        timeoutSeconds: 15
+        url: https://slack.com/api/chat.postMessage
+      position:
+        x: 9600
+        'y': 990
+      isCollapsed: false
+    - id: loop-wait-for-deploy-5d9973
+      name: Wait for Deploy
+      type: TYPE_ACTION
+      component: loop
+      configuration:
+        maxIterations: 30
+        timeoutSeconds: 900
+        untilExpression: $['Poll Deploy'].data.body[0].deploy.status == "live" || $['Poll Deploy'].data.body[0].deploy.status == "build_failed" || $['Poll Deploy'].data.body[0].deploy.status == "update_failed" || $['Poll Deploy'].data.body[0].deploy.status == "canceled"
+      position:
+        x: 8320
+        'y': 1350
+      isCollapsed: false
+    - id: if-check-deploy-status-ed6574
+      name: Check Deploy Status
+      type: TYPE_ACTION
+      component: if
+      configuration:
+        expression: $['Refresh Deploy'].data.body[0].deploy.status == "live"
+      position:
+        x: 9600
+        'y': 1350
+      isCollapsed: false
+  edges:
+    - sourceId: slack-onappmention-on-mention-0adf8d
+      targetId: http-ack-start-709f86
+      channel: default
+    - sourceId: http-ack-start-709f86
+      targetId: runnerbash-clean-prompt-a5ddfd
+      channel: success
+    - sourceId: http-ack-start-709f86
+      targetId: runnerbash-clean-prompt-a5ddfd
+      channel: failure
+    - sourceId: runnerbash-clean-prompt-a5ddfd
+      targetId: save-thread-message
+      channel: passed
+    - sourceId: runnerbash-clean-prompt-a5ddfd
+      targetId: http-notify-error-1afeef
+      channel: failed
+    - sourceId: save-thread-message
+      targetId: load-thread-context
+      channel: default
+    - sourceId: load-thread-context
+      targetId: build-prompt
+      channel: found
+    - sourceId: load-thread-context
+      targetId: build-prompt
+      channel: notFound
+    - sourceId: build-prompt
+      targetId: runnerbash-generate-site-4882ea
+      channel: passed
+    - sourceId: build-prompt
+      targetId: http-notify-error-1afeef
+      channel: failed
+    - sourceId: runnerbash-generate-site-4882ea
+      targetId: if-check-need-info-2ad4f6
+      channel: passed
+    - sourceId: runnerbash-generate-site-4882ea
+      targetId: http-notify-error-1afeef
+      channel: failed
+    - sourceId: if-check-need-info-2ad4f6
+      targetId: http-ask-more-info-062e17
+      channel: 'true'
+    - sourceId: http-ask-more-info-062e17
+      targetId: noop-on-error-57258b
+      channel: success
+    - sourceId: http-ask-more-info-062e17
+      targetId: noop-on-error-57258b
+      channel: failure
+    - sourceId: if-check-need-info-2ad4f6
+      targetId: if-validate-html-f42f6c
+      channel: 'false'
+    - sourceId: if-validate-html-f42f6c
+      targetId: runnerbash-push-preview-5f50cd
+      channel: 'true'
+    - sourceId: if-validate-html-f42f6c
+      targetId: http-notify-validate-error-821f9d
+      channel: 'false'
+    - sourceId: http-notify-validate-error-821f9d
+      targetId: noop-on-error-57258b
+      channel: success
+    - sourceId: http-notify-validate-error-821f9d
+      targetId: noop-on-error-57258b
+      channel: failure
+    - sourceId: runnerbash-push-preview-5f50cd
+      targetId: slack-waitforbuttonclick-approval-gate-29736b
+      channel: passed
+    - sourceId: runnerbash-push-preview-5f50cd
+      targetId: http-notify-preview-error-e11045
+      channel: failed
+    - sourceId: http-notify-preview-error-e11045
+      targetId: noop-on-error-57258b
+      channel: success
+    - sourceId: http-notify-preview-error-e11045
+      targetId: noop-on-error-57258b
+      channel: failure
+    - sourceId: slack-waitforbuttonclick-approval-gate-29736b
+      targetId: if-check-approval-efb865
+      channel: received
+    - sourceId: slack-waitforbuttonclick-approval-gate-29736b
+      targetId: http-notify-approval-timeout-f4cbca
+      channel: timeout
+    - sourceId: http-notify-approval-timeout-f4cbca
+      targetId: noop-on-error-57258b
+      channel: success
+    - sourceId: http-notify-approval-timeout-f4cbca
+      targetId: noop-on-error-57258b
+      channel: failure
+    - sourceId: if-check-approval-efb865
+      targetId: runnerbash-push-to-github-9780ad
+      channel: 'true'
+    - sourceId: if-check-approval-efb865
+      targetId: http-notify-rejected-3d94dc
+      channel: 'false'
+    - sourceId: http-notify-rejected-3d94dc
+      targetId: noop-on-error-57258b
+      channel: success
+    - sourceId: http-notify-rejected-3d94dc
+      targetId: noop-on-error-57258b
+      channel: failure
+    - sourceId: runnerbash-push-to-github-9780ad
+      targetId: loop-wait-for-deploy-5d9973
+      channel: passed
+    - sourceId: runnerbash-push-to-github-9780ad
+      targetId: http-notify-push-error-c11d71
+      channel: failed
+    - sourceId: http-notify-push-error-c11d71
+      targetId: noop-on-error-57258b
+      channel: success
+    - sourceId: http-notify-push-error-c11d71
+      targetId: noop-on-error-57258b
+      channel: failure
+    - sourceId: loop-wait-for-deploy-5d9973
+      targetId: wait-poll-wait-5349bd
+      channel: next
+    - sourceId: wait-poll-wait-5349bd
+      targetId: http-poll-deploy-a43759
+      channel: default
+    - sourceId: http-poll-deploy-a43759
+      targetId: loop-wait-for-deploy-5d9973
+      channel: success
+    - sourceId: http-poll-deploy-a43759
+      targetId: http-notify-render-error-e6c307
+      channel: failure
+    - sourceId: loop-wait-for-deploy-5d9973
+      targetId: http-refresh-deploy-b3396e
+      channel: done
+    - sourceId: http-refresh-deploy-b3396e
+      targetId: if-check-deploy-status-ed6574
+      channel: success
+    - sourceId: http-refresh-deploy-b3396e
+      targetId: http-notify-render-error-e6c307
+      channel: failure
+    - sourceId: if-check-deploy-status-ed6574
+      targetId: http-get-url-b2000c
+      channel: 'true'
+    - sourceId: if-check-deploy-status-ed6574
+      targetId: http-notify-deploy-error-d74d66
+      channel: 'false'
+    - sourceId: http-notify-deploy-error-d74d66
+      targetId: noop-on-error-57258b
+      channel: success
+    - sourceId: http-notify-deploy-error-d74d66
+      targetId: noop-on-error-57258b
+      channel: failure
+    - sourceId: http-get-url-b2000c
+      targetId: http-verify-live-ce616f
+      channel: success
+    - sourceId: http-get-url-b2000c
+      targetId: http-notify-render-error-e6c307
+      channel: failure
+    - sourceId: http-notify-render-error-e6c307
+      targetId: noop-on-error-57258b
+      channel: success
+    - sourceId: http-notify-render-error-e6c307
+      targetId: noop-on-error-57258b
+      channel: failure
+    - sourceId: http-verify-live-ce616f
+      targetId: upsertmemory-save-portfolio-c9ec7a
+      channel: success
+    - sourceId: http-verify-live-ce616f
+      targetId: http-notify-verify-error-4b0427
+      channel: failure
+    - sourceId: http-notify-verify-error-4b0427
+      targetId: noop-on-error-57258b
+      channel: success
+    - sourceId: http-notify-verify-error-4b0427
+      targetId: noop-on-error-57258b
+      channel: failure
+    - sourceId: upsertmemory-save-portfolio-c9ec7a
+      targetId: http-notify-success-168418
+      channel: default
+    - sourceId: http-notify-success-168418
+      targetId: noop-on-error-57258b
+      channel: success
+    - sourceId: http-notify-success-168418
+      targetId: noop-on-error-57258b
+      channel: failure
+    - sourceId: http-notify-error-1afeef
+      targetId: noop-on-error-57258b
+      channel: success
+    - sourceId: http-notify-error-1afeef
+      targetId: noop-on-error-57258b
+      channel: failure

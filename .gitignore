@@ -1,0 +1,12 @@
+# Private / working SuperPlane canvas with workspace-specific IDs
+canvas.private.yaml
+
+# Environment and secrets
+.env
+.env.*
+secrets.yaml
+*.pem
+*.key
+
+# macOS
+.DS_Store
