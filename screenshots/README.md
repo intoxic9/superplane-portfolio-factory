@@ -1,19 +1,16 @@
 # Screenshots
 
-Add demo screenshots here before publishing the repository. Prefer cropped UI captures that do not show private channel IDs, tokens, or unrelated workspace data.
+Demo captures of the Portfolio Factory SuperPlane canvas, used in the root [README.md](../README.md).
 
-## Recommended files
-
-| Suggested filename | What to capture |
+| File | Section |
 |---|---|
-| `01-superplane-canvas.png` | Full SuperPlane canvas graph for Portfolio Factory (nodes + edges visible) |
-| `02-slack-request.png` | Slack message where a user mentions the bot with a portfolio brief |
-| `03-generated-preview.png` | Browser preview of the generated `index.html` (htmlpreview or local render) |
-| `04-approval-message.png` | Slack approval message with **Approve & Deploy** / **Reject** buttons and preview link |
-| `05-successful-deployment.png` | Slack success notification with the live production URL after Render deploy |
+| `01-full-canvas.png` | Full graph overview |
+| `02-slack-intake-memory.png` | On Mention → Ack → Clean Prompt → memory |
+| `03-generate-validate-preview.png` | GPT-5 generate → Validate HTML → Push Preview |
+| `04-approval-github-render.png` | Approval Gate → Push to GitHub → Render wait loop |
+| `05-validation-deploy-checks.png` | Ask More Info / notify paths → Check Deploy Status |
+| `06-verify-save-success.png` | Get URL → Verify Live → Save Portfolio → Notify Success |
+| `07-error-sink.png` | Notify Preview Error → On Error sink |
+| `slack-demo-qr.png` | QR code for the public Slack demo invite |
 
-## Tips
-
-- Blur or redact secrets, personal emails you do not want public, and internal channel names if needed.
-- Keep aspect ratios consistent (wide canvases for the SuperPlane graph; mobile-friendly crops optional for Slack).
-- After adding images, link them from the root `README.md` if you want a visual walkthrough.
+Prefer images that do not expose private channel IDs, tokens, or unrelated workspace data.

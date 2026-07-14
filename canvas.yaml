@@ -114,7 +114,7 @@ spec:
             value: '{{ $[''Clean Prompt''].data.result.repo_override }}'
             valueSource: literal
           - name: DEFAULT_REPO
-            value: YOUR_GITHUB_USERNAME/YOUR_REPOSITORY
+            value: intoxic9/Superplane_hackathon
             valueSource: literal
           - name: GH_TOKEN
             secret:
@@ -234,7 +234,7 @@ spec:
             value: '{{ $[''Clean Prompt''].data.result.repo_override }}'
             valueSource: literal
           - name: DEFAULT_REPO
-            value: YOUR_GITHUB_USERNAME/YOUR_REPOSITORY
+            value: intoxic9/Superplane_hackathon
             valueSource: literal
           - name: USER_ID
             value: '{{ $[''Clean Prompt''].data.result.user_id }}'

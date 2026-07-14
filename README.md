@@ -1,144 +1,200 @@
 # Portfolio Factory
 
-**Portfolio Factory** is a SuperPlane automation that turns Slack conversations into live personal portfolio websites. Mention a Slack bot with a design brief, review a generated preview, approve in one click, and deploy to production through GitHub and Render.
+**Portfolio Factory** is an open-source [SuperPlane](https://superplane.com) automation that turns a Slack conversation into a live personal portfolio website.
 
-This repository contains a sanitized, import-ready SuperPlane canvas (`canvas.yaml`) and documentation for recreating the workflow in your own workspace.
+Mention a Slack bot with a design brief → GPT-5 generates a self-contained `index.html` via OpenRouter → a GitHub preview branch is published for review → human approval in Slack → push to `main` → Render deploys production → the bot posts the live URL back in the thread.
+
+This repository ships a sanitized, import-ready canvas (`canvas.yaml`) so other developers can recreate the workflow in their own SuperPlane workspace.
+
+## Live demo
+
+Join the public Slack demo workspace:
+
+[Join the Portfolio Factory Slack workspace](https://join.slack.com/t/shubhlabsai/shared_invite/zt-43soggs7m-AyaXY8cG1s01VqwxMtz6zw)
+
+You can also scan the QR code below from your phone:
+
+![Scan to join the Portfolio Factory Slack workspace](screenshots/slack-demo-qr.png)
+
+### How to use the demo
+
+- You can start a request in any Slack channel where the bot is present.
+- Every request must include `@SuperPlane`. Messages without the mention will not be processed.
+- After the first request, continue inside the same Slack thread so the bot can reuse the full conversation history.
+- Use `@SuperPlane` again for every follow-up message in the thread.
+
+Accepted input you can paste into Slack (with the `@SuperPlane` mention):
+
+- LinkedIn profile text or URL
+- GitHub profile or repository links
+- Resume / CV text
+- Project descriptions
+- Other copied text (bio, skills, experience, contact details)
+
+**Disclaimer:** The live site is generated only from user-provided content in the Slack thread. The automation does not scrape external profiles on its own—paste or type whatever details you want reflected on the page.
+
+The live demo deploys preview and production HTML to the GitHub account **`intoxic9`**, repository [`intoxic9/Superplane_hackathon`](https://github.com/intoxic9/Superplane_hackathon).
+
+Example:
+
+```text
+@SuperPlane Build a modern portfolio website for an AI engineer using the resume below.
+```
+
+Then, in the **same thread**, refine with another mention:
+
+```text
+@SuperPlane Make the design darker and add a Projects section.
+```
+
+![Full SuperPlane canvas for Portfolio Factory](screenshots/01-full-canvas.png)
 
 ---
 
-## What Portfolio Factory does
+## Table of contents
 
-Portfolio Factory listens for Slack `@bot` mentions, accumulates thread context as conversational memory, asks GPT-5 (via OpenRouter) to produce a complete single-file HTML portfolio, pushes a preview branch to GitHub for review, waits for human approval in Slack, then deploys the approved site to production and monitors the Render deploy until it is live.
+- [Live demo](#live-demo)
+- [What it does](#what-it-does)
+- [Problem it solves](#problem-it-solves)
+- [Architecture](#architecture)
+- [Workflow walkthrough](#workflow-walkthrough)
+- [Repository structure](#repository-structure)
+- [Prerequisites](#prerequisites)
+- [Required secrets](#required-secrets)
+- [Setup](#setup)
+- [How to run](#how-to-run)
+- [Troubleshooting](#troubleshooting)
+- [Security](#security)
+- [License](#license)
 
 ---
 
-## The problem it solves
+## What it does
 
-Building a portfolio from scratch usually means writing HTML/CSS, iterating on design feedback, configuring hosting, and deploying manually. That loop is slow when someone just wants a polished site from a short brief—or when they refine the design mid-conversation (“make it darker”, “add a Speaking section”).
+| Capability | Detail |
+|---|---|
+| Slack trigger | Starts on `@bot` mention (`slack.onAppMention`) |
+| Conversational memory | Per-thread history in SuperPlane memory (`thread_messages`) |
+| Site generation | OpenRouter + `openai/gpt-5` → single-file HTML |
+| Preview | Force-pushes `preview/<slack_user_id>` and shares an htmlpreview URL |
+| Human gate | Slack buttons: **Approve & Deploy** / **Reject** (10‑minute timeout) |
+| Production | Pushes approved `index.html` to the repo default branch |
+| Hosting | Polls Render deploys until `live`, verifies HTTP 200 |
+| Catalog | Saves deploy metadata in `portfolios` memory namespace |
 
-Portfolio Factory compresses that loop into a single Slack thread:
+---
 
-1. Describe what you want (or refine a prior version in-thread).
+## Problem it solves
+
+Shipping a portfolio usually means writing HTML/CSS by hand, iterating on design feedback across tools, wiring Git, and waiting on hosting. Portfolio Factory compresses that into one Slack thread:
+
+1. Describe (or refine) what you want.
 2. Review a browser preview.
-3. Approve to ship to production.
+3. Click approve to go live.
 
-No local build tooling is required for the generated site; each portfolio is a self-contained `index.html`.
-
----
-
-## End-to-end workflow
-
-1. **Slack mention** — A user mentions the Slack app in a channel (or replies in a thread).
-2. **Acknowledge** — The bot posts an ack message in the thread.
-3. **Clean prompt** — Mentions, Slack link markup, and optional `repo:owner/name` overrides are stripped/normalized.
-4. **Save thread message** — The cleaned text is stored in SuperPlane memory under the `thread_messages` namespace.
-5. **Load thread history** — Prior messages for the same Slack thread are loaded.
-6. **Build accumulated prompt** — History + latest message become the LLM brief (later messages override earlier ones when they conflict).
-7. **Generate with GPT-5** — OpenRouter is called with `openai/gpt-5` to produce HTML (or a `NEED_MORE_INFO` response).
-8. **Validate HTML** — Output must look like HTML (starts with `<`, meaningful length). Insufficient briefs go back to Slack with a clarifying question.
-9. **Push preview branch** — Valid HTML is force-pushed to `preview/<slack_user_id>` and a [htmlpreview.github.io](https://htmlpreview.github.io) URL is built.
-10. **Slack approval gate** — Approve & Deploy / Reject buttons are posted (10-minute timeout).
-11. **Push to main** — On approval, HTML is committed and pushed to the default branch.
-12. **Wait for Render** — The canvas polls the Render deploy API until `live` or a failure status.
-13. **Verify live website** — A GET against the service URL checks for HTTP 200.
-14. **Save portfolio metadata** — Success details are stored in the `portfolios` memory namespace.
-15. **Notify in Slack** — The live URL is posted back to the thread.
-
-Rejection, timeout, validation, GitHub, and Render failure paths notify the user and end the run cleanly. See [architecture.md](./architecture.md) for the full flowchart.
+Refinements like “make it darker” or “add a Speaking section” stay in-thread; the canvas reloads prior messages so GPT-5 sees the full conversation.
 
 ---
 
-## Slack conversational memory
+## Architecture
 
-The canvas uses two SuperPlane memory namespaces:
+See also [architecture.md](./architecture.md) for a Mermaid flowchart with every error branch.
 
-| Namespace | Purpose |
+```text
+Slack mention
+  → Ack Start
+  → Clean Prompt
+  → Save Thread Message
+  → Load Thread Context
+  → Build Prompt
+  → Generate Site (OpenRouter / GPT-5)
+  → Validate HTML
+  → Push Preview (GitHub)
+  → Approval Gate (Slack)
+  → Push to GitHub (main)
+  → Wait for Deploy (Render poll loop)
+  → Verify Live
+  → Save Portfolio
+  → Notify Success
+```
+
+Error paths (insufficient info, validation, GitHub, rejection, timeout, Render, verify) notify Slack and terminate at a shared **On Error** noop.
+
+### Integrations
+
+| System | Role |
 |---|---|
-| `thread_messages` | Per-thread history keyed by Slack `thread_anchor` (and message `ts`) |
-| `portfolios` | Final deploy metadata keyed by Slack `user_id` |
-
-Every `@bot` mention is saved before generation. On later messages in the same thread, the workflow loads the full history, so refinements such as “make it darker” or “drop the blog section” combine with the original brief. The Build Prompt node formats oldest-first history and emphasizes the latest message.
-
----
-
-## GPT-5 website generation through OpenRouter
-
-The Generate Site node calls OpenRouter’s chat completions API with model `openai/gpt-5`. The system-style brief asks for:
-
-- A complete, self-contained `index.html` (inline CSS/JS only)
-- Responsive layout, semantic HTML, and accessible contrast
-- Sensible defaults when details are missing
-- `NEED_MORE_INFO: …` when the brief is too vague to build
-
-The OpenRouter API key is referenced as the SuperPlane secret `OPENROUTER_API_KEY` (never embedded in the canvas).
+| **SuperPlane** | Canvas orchestration, secrets, memory, Slack component nodes |
+| **Slack** | Trigger, acks, approval buttons, all user-facing notifications |
+| **OpenRouter** | Chat completions (`openai/gpt-5`) for HTML generation |
+| **GitHub** | Preview branches + production `index.html` |
+| **Render** | Hosting; deploy status API + live URL |
 
 ---
 
-## Preview branches in GitHub
+## Workflow walkthrough
 
-On successful HTML validation, Push Preview:
+### 1. Full canvas
 
-- Clones the target repository (default `YOUR_GITHUB_USERNAME/YOUR_REPOSITORY`, or a per-request `repo:owner/name` override)
-- Writes `index.html` on branch `preview/<slack_user_id>`
-- Force-pushes that branch
-- Returns a rendered preview URL via htmlpreview.github.io
+The published SuperPlane graph end-to-end: trigger on the left, generation and gates in the middle, Render verification and notifications on the right, with many failure edges converging on **On Error**.
 
-This lets reviewers see the page without merging to production.
+![Full Portfolio Factory canvas](screenshots/01-full-canvas.png)
 
----
+### 2. Slack intake and thread memory
 
-## Human approval in Slack
+![Slack mention → clean prompt → memory](screenshots/02-slack-intake-memory.png)
 
-The Approval Gate node posts Slack buttons:
+1. **On Mention** — Slack app mention triggers the canvas.
+2. **Ack Start** — `POST https://slack.com/api/chat.postMessage` acknowledges in-thread.
+3. **Clean Prompt** — Strips Slack mention markup, normalizes links, optional `repo:owner/name` override.
+4. **Save Thread Message** — Upserts into namespace `thread_messages` (`thread_anchor`, `ts`, `user_id`, `prompt`).
+5. **Load Thread Context** — Reads prior messages for the same thread (`found` / `notFound`).
 
-- **Approve & Deploy** — continue to production push + Render monitoring
-- **Reject** — discard this version; the user can refine in-thread (memory is retained)
+### 3. Prompt build, GPT-5 generation, validation, preview
 
-If no one clicks within 10 minutes, a timeout notification is sent with the preview link still available.
+![Build Prompt → Generate Site → Validate HTML → Push Preview](screenshots/03-generate-validate-preview.png)
 
----
+1. **Build Prompt** — Formats thread history (oldest first) + latest message into one LLM brief.
+2. **Generate Site** — Calls OpenRouter with model `openai/gpt-5`; returns HTML or `NEED_MORE_INFO: …`.
+3. **Check Need Info** — If the model asked for more detail, route to Slack (see step 5).
+4. **Validate HTML** — Requires content that starts with `<` and is long enough to be a real page.
+5. **Push Preview** — Writes `index.html` to `preview/<user_id>` and returns an htmlpreview URL.
+6. Failures from build / generate / early checks hit **Notify Error** (Slack).
 
-## Render deployment monitoring
+### 4. Human approval, production push, Render wait loop
 
-After a production push, the canvas:
+![Approval Gate → Push to GitHub → Wait for Deploy](screenshots/04-approval-github-render.png)
 
-1. Polls `GET /v1/services/YOUR_RENDER_SERVICE_ID/deploys?limit=1` on a 15-second interval (loop up to 30 iterations / 15 minutes)
-2. Stops when status is `live`, `build_failed`, `update_failed`, or `canceled`
-3. On `live`, fetches the service URL and verifies HTTP 200
-4. Notifies Slack on success or failure
+1. **Approval Gate** — Slack buttons: Approve & Deploy / Reject; 600s timeout.
+2. **Check Approval** — `approve` → production path; otherwise reject notification.
+3. **Push to GitHub** — Commits approved HTML to the default branch.
+4. **Wait for Deploy** — Loop: wait 15s → poll Render `…/deploys?limit=1` until `live` / failure / canceled (max 30 iterations, 15 minutes).
+5. Timeout and reject paths post Slack messages and exit.
 
-Your Render static/web service should be connected to the same GitHub repository and deploy from the production branch.
+### 5. Clarifying questions and deploy status checks
 
----
+![Ask More Info, validation / timeout notifies, Check Deploy Status](screenshots/05-validation-deploy-checks.png)
 
-## Error handling
+- **Ask More Info** / **Notify Validate Error** — User-facing feedback when the brief is thin or HTML is invalid.
+- **Notify Approval Timeout** / **Notify Rejected** — Human-gate outcomes; preview link retained on timeout.
+- **Refresh Deploy** → **Check Deploy Status** → **Get URL** → **Verify Live** — Confirm Render `live` and HTTP 200 on the service URL.
 
-The canvas includes dedicated Slack notifications (and a shared On Error noop sink) for:
+### 6. Persist metadata and notify success
 
-| Path | When |
-|---|---|
-| Insufficient information | Model returns `NEED_MORE_INFO…` |
-| Validation error | Output is not valid-looking HTML |
-| GitHub / preview error | Clone or push preview fails |
-| Rejection | User clicks Reject |
-| Approval timeout | No button click within 10 minutes |
-| Production push error | Push to main fails |
-| Render API / deploy error | Render unreachable or deploy not `live` |
-| Verify error | Live URL does not return 200 |
-| Generic pipeline error | Clean Prompt / Build Prompt / Generate Site failures |
+![Get URL → Verify Live → Save Portfolio → Notify Success](screenshots/06-verify-save-success.png)
 
-Error messages scrub GitHub token material from logs before writing results.
+1. **Get URL** — `GET` Render service details.
+2. **Verify Live** — `GET` the public site URL; expect `200`.
+3. **Save Portfolio** — Upsert namespace `portfolios` (`user_id`, `thread_anchor`, `prompt`, `repo`, `url`, …).
+4. **Notify Success** — Posts the live URL (and repo) back to the Slack thread.
 
----
+Failing Get URL / Verify Live / deploy status routes send **Notify Deploy Error**, **Notify Render Error**, or **Notify Verify Error**.
 
-## Technologies used
+### 7. Shared error sink
 
-- **[SuperPlane](https://superplane.com)** — canvas orchestration, secrets, memory, Slack integration nodes
-- **Slack** — trigger (`onAppMention`), approval buttons, notifications
-- **OpenRouter** — GPT-5 chat completions for HTML generation
-- **GitHub** — preview branches + production `index.html`
-- **Render** — hosting and deploy status API
-- **Bash + jq + curl + git** — runner scripts inside SuperPlane action nodes
+![Notify Preview Error → On Error](screenshots/07-error-sink.png)
+
+Almost every notification path (preview failure, pipeline error, deploy failure, success) ends at **On Error**, a noop that gives the run a single terminal node.
 
 ---
 
@@ -146,153 +202,178 @@ Error messages scrub GitHub token material from logs before writing results.
 
 ```text
 .
-├── LICENSE
-├── README.md
-├── architecture.md
-├── canvas.yaml              # Public, sanitized SuperPlane canvas (import this)
-├── canvas.private.yaml      # Local working canvas (gitignored; not for public use)
-├── .env.example
+├── LICENSE                 # MIT
+├── README.md               # This file
+├── architecture.md         # Mermaid flowchart + error branch map
+├── canvas.yaml             # Public SuperPlane canvas (import this)
+├── console.yaml            # Companion console stub (empty panels)
+├── canvas.private.yaml     # Local working copy (gitignored)
+├── .env.example            # Secret name placeholders
 ├── .gitignore
-├── docs/                    # Extra notes / diagrams you add later
+├── docs/                   # Extra notes
 ├── examples/
 │   └── sample-slack-prompt.md
 └── screenshots/
-    └── README.md            # Guidance for demo screenshots
+    ├── 01-full-canvas.png
+    ├── 02-slack-intake-memory.png
+    ├── 03-generate-validate-preview.png
+    ├── 04-approval-github-render.png
+    ├── 05-validation-deploy-checks.png
+    ├── 06-verify-save-success.png
+    └── 07-error-sink.png
 ```
+
+`canvas.yaml` preserves the full workflow (nodes, edges, scripts, prompts, memory). Operational IDs are placeholders you must replace after import.
 
 ---
 
-## Setup prerequisites
+## Prerequisites
 
-Before importing the canvas:
-
-1. A SuperPlane workspace with permission to create canvases and secrets
-2. A Slack workspace where you can install / connect a Slack app
-3. A GitHub repository that will host `index.html` (empty or existing)
-4. A Render service connected to that GitHub repository
-5. An OpenRouter account with access to `openai/gpt-5` (or change the `MODEL` literal in Generate Site)
-6. API tokens listed under [Required secrets](#required-secrets)
-
-Replace placeholders in `canvas.yaml` after import (or before):
-
-| Placeholder | Replace with |
-|---|---|
-| `YOUR_CANVAS_ID` | SuperPlane-assigned canvas ID (or leave for import to assign) |
-| `YOUR_GITHUB_USERNAME/YOUR_REPOSITORY` | Target GitHub repo |
-| `YOUR_SLACK_CHANNEL_ID` | Slack channel ID for approval buttons |
-| `YOUR_SLACK_CHANNEL_NAME` | Human-readable channel name (metadata) |
-| `YOUR_RENDER_SERVICE_ID` | Render service ID (`srv-…`) |
-| `YOUR_SUPERPLANE_INTEGRATION_ID` | Slack integration ID in SuperPlane |
-| `YOUR_APP_SUBSCRIPTION_ID` | Slack app subscription ID for the mention trigger |
+- SuperPlane workspace with canvas import + secrets
+- Slack workspace where you can install / connect a Slack app
+- GitHub repository for `index.html` (preview + production branches)
+- Render static site or web service wired to that repository’s production branch
+- OpenRouter account with access to `openai/gpt-5` (or change the `MODEL` literal on **Generate Site**)
 
 ---
 
 ## Required secrets
 
-Configure these as SuperPlane secrets (names must match). Values stay in SuperPlane—not in this repository.
+Configure these **names** in SuperPlane Secrets (values never belong in git):
 
-| Secret name | Used for |
+| Secret | Purpose |
 |---|---|
-| `OPENROUTER_API_KEY` | OpenRouter Authorization bearer for GPT-5 generation |
-| `GH_TOKEN` | Git clone/push (needs repo contents read/write) |
-| `SLACK_BOT_TOKEN` | `chat.postMessage` acknowledgements and error notifications |
-| `RENDER_API_KEY` | Render service/deploy API calls |
+| `OPENROUTER_API_KEY` | Bearer token for OpenRouter chat completions |
+| `GH_TOKEN` | Clone/push preview + production branches |
+| `SLACK_BOT_TOKEN` | `chat.postMessage` acks and notifications |
+| `RENDER_API_KEY` | Render service + deploy API |
 
-`.env.example` lists the same names for local documentation. Do not commit real values.
+`.env.example` lists the same keys for documentation only.
+
+### Placeholders to replace in `canvas.yaml`
+
+| Placeholder | Meaning |
+|---|---|
+| `YOUR_CANVAS_ID` | Canvas ID (or let import assign one) |
+| `YOUR_GITHUB_USERNAME/YOUR_REPOSITORY` | Default GitHub repo for Push Preview / Push to GitHub |
+| `YOUR_SLACK_CHANNEL_ID` | Channel for Approval Gate buttons |
+| `YOUR_SLACK_CHANNEL_NAME` | Channel display name (metadata) |
+| `YOUR_RENDER_SERVICE_ID` | Render service id (`srv-…`) |
+| `YOUR_SUPERPLANE_INTEGRATION_ID` | Slack integration id on On Mention / Approval Gate |
+| `YOUR_APP_SUBSCRIPTION_ID` | Slack app subscription on On Mention |
 
 ---
 
-## How to import `canvas.yaml` into SuperPlane
+## Setup
+
+### 1. Clone this repository
+
+```bash
+git clone https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPOSITORY.git
+cd YOUR_REPOSITORY
+```
+
+### 2. Import the canvas into SuperPlane
 
 1. Open your SuperPlane workspace.
-2. Create or open a canvas and choose the import / upload canvas YAML option supported by your SuperPlane UI.
-3. Select `canvas.yaml` from this repository.
-4. After import, reconnect Slack integration bindings:
-   - On Mention → your Slack app subscription / integration IDs
-   - Approval Gate → your Slack channel + integration ID
-5. Set secret references for `OPENROUTER_API_KEY`, `GH_TOKEN`, `SLACK_BOT_TOKEN`, and `RENDER_API_KEY`.
-6. Replace GitHub default repo and Render service ID placeholders with your values.
+2. Create or open a canvas.
+3. Import / upload `canvas.yaml` (and optionally `console.yaml`).
+4. Rebind Slack:
+   - **On Mention** → your app subscription + integration IDs
+   - **Approval Gate** → your channel ID + integration ID
+5. Attach secrets: `OPENROUTER_API_KEY`, `GH_TOKEN`, `SLACK_BOT_TOKEN`, `RENDER_API_KEY`.
+6. Replace GitHub default repo and Render service ID placeholders everywhere they appear (including Slack error message dashboard URLs).
 7. Save and enable the canvas / trigger.
 
-Exact menu labels may vary by SuperPlane UI version; the imported graph preserves nodes, edges, scripts, prompts, and memory configuration from this file.
+Exact menu labels may vary by SuperPlane UI version; the imported graph already contains scripts and edges.
 
----
+### 3. Configure Slack
 
-## How to configure Slack, GitHub, OpenRouter, and Render
+1. Connect Slack in SuperPlane Integrations.
+2. Invite the bot to the approval channel.
+3. Ensure the bot can post messages and interactive buttons.
+4. Set Approval Gate `channel` to your channel ID.
 
-### Slack
+### 4. Configure GitHub
 
-1. Connect your Slack app / workspace in SuperPlane Integrations.
-2. Ensure the bot can join the target channel and has permission to post messages and interactive buttons.
-3. Set Approval Gate `channel` to your Slack channel ID (`YOUR_SLACK_CHANNEL_ID`).
-4. Invite the bot to that channel.
-5. Confirm `On Mention` is wired to the connected app subscription.
+1. Create or reuse a repository for portfolio HTML.
+2. Issue a token with contents read/write on that repo.
+3. Store it as `GH_TOKEN`.
+4. Set `DEFAULT_REPO` on **Push Preview** and **Push to GitHub**.
+5. Optional per-request override: include `repo:owner/name` in the Slack message.
 
-### GitHub
-
-1. Create (or reuse) a repository for portfolio HTML.
-2. Create a personal access token or fine-grained token with contents read/write on that repo.
-3. Store it as SuperPlane secret `GH_TOKEN`.
-4. Set `DEFAULT_REPO` on Push Preview and Push to GitHub to `owner/repo`.
-5. Optional per-request override: include `repo:owner/name` in the Slack message; Clean Prompt extracts it.
-
-### OpenRouter
+### 5. Configure OpenRouter
 
 1. Create an API key at [openrouter.ai](https://openrouter.ai).
-2. Store it as SuperPlane secret `OPENROUTER_API_KEY`.
-3. Confirm the Generate Site node’s `MODEL` value (`openai/gpt-5`) is available on your account, or change it.
+2. Store as `OPENROUTER_API_KEY`.
+3. Confirm `openai/gpt-5` is available, or change **Generate Site** → `MODEL`.
 
-### Render
+### 6. Configure Render
 
-1. Create a static site (or web service) that deploys from your GitHub repo’s production branch.
-2. Note the service ID (`srv-…`).
-3. Create a Render API key and store it as `RENDER_API_KEY`.
-4. Replace `YOUR_RENDER_SERVICE_ID` in Get URL, Poll Deploy, Refresh Deploy, and related Slack error message URLs.
+1. Create a static site (or web service) that deploys from your GitHub production branch.
+2. Copy the service ID (`srv-…`).
+3. Create a Render API key → `RENDER_API_KEY`.
+4. Replace `YOUR_RENDER_SERVICE_ID` on **Get URL**, **Poll Deploy**, **Refresh Deploy**, and related Slack texts.
 
 ---
 
-## How to run the automation
+## How to run
 
 1. Enable the canvas in SuperPlane.
-2. In the configured Slack channel, mention the bot with a portfolio brief, for example:
+2. In the configured Slack channel, mention the bot with a brief. Example:
 
    ```text
-   @PortfolioFactory Build a software engineer portfolio for Alex Rivera…
+   @PortfolioFactory Build a software engineer portfolio for Jordan Lee…
    ```
 
-   See [examples/sample-slack-prompt.md](./examples/sample-slack-prompt.md) for a fuller example.
+   Full sample: [examples/sample-slack-prompt.md](./examples/sample-slack-prompt.md).
 
-3. Wait for the acknowledgment (~1–3 minutes for generation depending on model latency).
-4. Open the preview link from the approval message.
-5. Click **Approve & Deploy** or **Reject**.
-6. On approve, wait for the success message with the live Render URL.
-7. To refine: reply **in the same thread** with changes (e.g. `@bot use a darker palette`). Memory retains prior thread context.
+3. Wait for the ack, then the approval message with a preview link.
+4. Open the preview → click **Approve & Deploy** or **Reject**.
+5. On approve, wait for the success message with the live Render URL.
+6. To iterate, reply **in the same thread** (e.g. `@bot use a darker palette`). Memory keeps prior context.
 
 ---
 
-## Security considerations
+## Troubleshooting
 
-- `canvas.private.yaml` is intentionally gitignored. Never publish workspace IDs, channel IDs, or real tokens.
-- Secret **names** appear in `canvas.yaml`; secret **values** must live only in SuperPlane (or a private `.env` that stays untracked).
-- `GH_TOKEN` is used over HTTPS as `x-access-token`; scripts scrub token substrings from error payloads before writing SuperPlane results.
-- Prefer least-privilege tokens (single-repo GitHub access; scoped Render/Slack tokens).
-- Approval Gate is a human control: production push only runs after Approve.
-- Preview branches are force-pushed; treat them as disposable review artifacts, not protected production history.
-- Do not commit `.env`, `secrets.yaml`, PEM/key files, or screenshots that expose tokens or private channel IDs.
+| Symptom | Likely cause | What to check |
+|---|---|---|
+| Canvas never starts | Trigger not bound / bot not in channel | On Mention subscription + integration IDs; invite bot; ensure you `@mention` the app |
+| No ack in Slack | `SLACK_BOT_TOKEN` missing or invalid | Secret name exact match; bot scopes for `chat:write` |
+| Generation fails | OpenRouter key / model | `OPENROUTER_API_KEY`; model string `openai/gpt-5`; OpenRouter dashboard usage |
+| `NEED_MORE_INFO` reply | Brief too vague | Include at least a name + role/vibe; see sample prompt |
+| Validate / “didn’t look like valid HTML” | Model returned prose or truncated HTML | Refine brief in-thread; retry; inspect Generate Site result in SuperPlane run |
+| Preview / push errors | GitHub auth or repo path | `GH_TOKEN` permissions; `DEFAULT_REPO`; clone URL in run logs (tokens scrubbed) |
+| Approval never appears | Wrong channel ID / integration | Approval Gate `YOUR_SLACK_CHANNEL_ID` + integration ID |
+| Approval timeout | No click within 10 minutes | Re-mention in thread; preview URL still in timeout message |
+| Render poll never goes live | Repo not connected or service ID wrong | Render auto-deploy from `main`; `YOUR_RENDER_SERVICE_ID`; `RENDER_API_KEY` |
+| Deploy error status | Build failed on Render | Render dashboard logs; valid `index.html` on production branch |
+| Verify Live fails | DNS / CDN lag or wrong URL | Wait and open URL manually; check Get URL `serviceDetails.url` |
+| Refinements ignore prior context | New thread / wrong anchor | Reply in the **same** Slack thread so `thread_anchor` matches |
+
+Use SuperPlane’s run inspector (Console / canvas run details) for node-level outputs. Notification nodes post the failure stage and message when GitHub/Render return structured errors.
+
+---
+
+## Security
+
+- Keep `canvas.private.yaml` private (listed in `.gitignore`).
+- Commit secret **names** only—never values, PEM/key files, or `.env`.
+- Prefer least-privilege tokens (single-repo GitHub; scoped Slack/Render).
+- Scripts scrub `x-access-token:…@` from GitHub error text before writing results.
+- Production push only after Slack **Approve**.
+- Treat `preview/*` branches as disposable review artifacts.
 
 ---
 
 ## Future improvements
 
-- Multi-page or multipage-site generation (beyond a single `index.html`)
-- Design system / brand kit injection from a shared template
-- Stronger HTML/CSS lint or accessibility checks before preview push
-- Parallel preview environments (per-user Render preview services)
-- Slack slash commands or modal forms for structured briefs
-- Automatic screenshot capture of the preview for the approval message
-- Rolling conversation summarization when thread history grows large
-- Support for selecting models or temperature per request
-- Audit log / admin dashboard of deployed portfolios from the `portfolios` namespace
+- Stronger HTML/a11y checks before preview
+- Design-kit / brand injection
+- Per-user Render preview services
+- Thread summarization for long conversations
+- Slash command or modal for structured briefs
 
 ---
 
