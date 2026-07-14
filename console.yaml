@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Console
+metadata:
+  canvasId: YOUR_CANVAS_ID
+  name: Portfolio Factory
+spec:
+  panels: []
+  layout: []
